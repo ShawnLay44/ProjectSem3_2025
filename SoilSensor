@@ -1,0 +1,69 @@
+import RPi.GPIO as GPIO
+import time
+from datetime import datetime
+
+SENSOR_PIN = 4
+CHECK_INTERVAL = 1800
+PULL_UP_DOWN = GPIO.PUD_UP
+
+SENSOR_STATUS_MAP = {
+    1: ("dry", "Need watering ⚠️"),
+    0: ("wet", "Moisture normal ✅")
+}
+
+def check_moisture():
+    try:
+        sensor_value = GPIO.input(SENSOR_PIN)
+        status, message = SENSOR_STATUS_MAP.get(sensor_value, ("unknown", "Sensor value abnormal ❌"))
+    except Exception as e:
+        sensor_value = -1
+        status = "error"
+        message = f"Sensor reading failed: {str(e)} ❌"
+    
+    return {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sensor_value": sensor_value,
+        "status": status,
+        "message": message
+    }
+
+def print_detection_result(data):
+    print("\n" + "="*50)
+    print(f"Detection time: {data['timestamp']}")
+    print(f"Sensor value: {data['sensor_value']} (1=dry/0=wet/-1=read failed)")
+    print(f"Status: {data['status']}")
+    print(f"Message: {data['message']}")
+    print("="*50)
+
+def main():
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(SENSOR_PIN, GPIO.IN, pull_up_down=PULL_UP_DOWN)
+    
+    print("🌱 Soil Moisture Real-Time Monitoring System Started")
+    print(f"🔌 Sensor pin: BCM {SENSOR_PIN}")
+    print(f"⏰ Detection interval: {CHECK_INTERVAL/60} minutes")
+    print("💡 Tip: Press Ctrl+C to stop the program safely")
+    print("-"*50)
+
+    try:
+        initial_data = check_moisture()
+        print("📌 First detection result:")
+        print_detection_result(initial_data)
+
+        while True:
+            print(f"\nWaiting {CHECK_INTERVAL/60} minutes for next detection...")
+            time.sleep(CHECK_INTERVAL)
+            detection_data = check_moisture()
+            print_detection_result(detection_data)
+
+    except KeyboardInterrupt:
+        print("\n\n🛑 Stop command received, cleaning up GPIO resources...")
+        GPIO.cleanup()
+        print("✅ Resource cleanup completed, program exited safely!")
+    except Exception as e:
+        print(f"\n❌ Program error: {str(e)}")
+        GPIO.cleanup()
+        print("✅ GPIO resources cleaned up, please check hardware connection and try again!")
+
+if __name__ == "__main__":
+    main()
