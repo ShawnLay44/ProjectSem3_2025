@@ -1,79 +1,139 @@
-import time
-import csv
-import random
-from datetime import datetime, timedelta
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 
-def collect_moisture_data(duration_days=2, interval_minutes=30):
-    """
-    Simulate soil moisture data collection (2 days, 30-min interval)
-    Generates realistic sensor data with moisture/temperature/light trends
-    """
-    filename = "soil_moisture.csv"
-    start_time = datetime.now()
-    
-    # CSV headers (match project requirements)
-    header = [
-        "timestamp", 
-        "soil_moisture_percent", 
-        "temperature_c", 
-        "light_intensity_lux", 
-        "plant_health_status"
-    ]
-    
-    with open(filename, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        
-        # Calculate total data points (2 days = 96 points)
-        total_intervals = int(duration_days * 24 * 60 / interval_minutes)
-        
-        for i in range(total_intervals):
-            # Simulate time progression (start from 6 AM)
-            current_time = start_time.replace(hour=6, minute=0, second=0, microsecond=0)
-            current_time += timedelta(minutes=interval_minutes * i)
-            
-            # Realistic moisture trend simulation (with watering event)
-            if i < 12:          # Morning: gradual decrease
-                moisture = 48.2 - i * 0.3
-            elif i == 12:       # Noon: watering event (moisture spike)
-                moisture = 55.6
-            elif i < 20:        # Afternoon: faster decrease
-                moisture = 55.6 - (i-12) * 1.2
-            else:               # Evening: slow recovery
-                moisture = 47.7 + (i-20) * 0.45
-            
-            # Temperature (daily cycle: 18-28°C)
-            hour = 6 + i * 0.5  # 0.5h per interval
-            temperature = 18 + 10 * abs(12 - hour) / 6
-            
-            # Light intensity (peak at noon: 10000 lux)
-            light = int(10000 * abs(1 - abs(12 - hour) / 6))
-            
-            # Plant health status
-            if i == 12:
-                status = "post_watering"
-            elif 44 <= moisture <= 55:
-                status = "optimal"
-            else:
-                status = "normal"
-            
-            # Add realistic sensor noise
-            moisture += random.uniform(-0.5, 0.5)
-            temperature += random.uniform(-0.3, 0.3)
-            light = max(0, light + random.randint(-100, 100))  # Ensure non-negative
-            
-            # Write row to CSV
-            row = [
-                current_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                round(moisture, 1),
-                round(temperature, 1),
-                light,
-                status
-            ]
-            writer.writerow(row)
-    
-    print(f"✅ Simulated data generated: {total_intervals} points saved to {filename}")
 
-# Run data generation
+# ============================================================
+# 1. Load & Clean Raw Data
+# ============================================================
+
+def load_and_clean_data(file_path: str) -> pd.DataFrame:
+    """
+    Load raw CSV sensor data and perform basic cleaning:
+    - Parse timestamps
+    - Remove invalid rows
+    - Filter physical outliers
+    - Sort by time
+    """
+    df = pd.read_csv(file_path)
+    print(f"[INFO] Raw rows loaded: {len(df)}")
+
+    # Parse timestamp safely
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df = df.dropna(subset=["timestamp"])
+
+    # Physical range validation (sensor realism)
+    df = df[(df["soil_moisture_percent"] >= 0) & (df["soil_moisture_percent"] <= 100)]
+    df = df[(df["temperature_c"] >= 0) & (df["temperature_c"] <= 50)]
+    df = df[df["light_intensity_lux"] >= 0]
+
+    # Sort by time (critical for time-series models)
+    df = df.sort_values("timestamp").reset_index(drop=True)
+
+    print(f"[INFO] Valid rows after cleaning: {len(df)}")
+    return df
+
+
+# ============================================================
+# 2. Denoising & Feature Engineering
+# ============================================================
+
+def denoise_and_engineer_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply denoising and generate model-ready features:
+    - Moving average smoothing
+    - Time index
+    """
+    # Moving average denoising (light smoothing)
+    df["moisture_denoised"] = (
+        df["soil_moisture_percent"]
+        .rolling(window=3, center=True)
+        .mean()
+    )
+
+    # Fill boundary NaNs
+    df["moisture_denoised"] = (
+        df["moisture_denoised"]
+        .bfill()
+        .ffill()
+    )
+
+    # Time index (for regression models)
+    df["time_index"] = np.arange(len(df))
+
+    return df
+
+
+# ============================================================
+# 3. Normalization
+# ============================================================
+
+def normalize_features(df: pd.DataFrame):
+    """
+    Normalize numerical features into [0,1] range.
+    Returns:
+        - Processed DataFrame
+        - Moisture scaler
+        - Feature scaler
+    """
+    moisture_scaler = MinMaxScaler(feature_range=(0, 1))
+    feature_scaler = MinMaxScaler(feature_range=(0, 1))
+
+    # Target normalization
+    df["moisture_norm"] = moisture_scaler.fit_transform(
+        df[["moisture_denoised"]]
+    )
+
+    # Feature normalization
+    feature_cols = ["time_index", "temperature_c", "light_intensity_lux"]
+    df[["time_norm", "temp_norm", "light_norm"]] = feature_scaler.fit_transform(
+        df[feature_cols]
+    )
+
+    return df, moisture_scaler, feature_scaler
+
+
+# ============================================================
+# 4. Save Processed Dataset
+# ============================================================
+
+def save_processed_data(df: pd.DataFrame, output_path: str):
+    """
+    Save cleaned and processed dataset for modeling.
+    """
+    df.to_csv(output_path, index=False)
+    print(f"[INFO] Processed data saved to: {output_path}")
+
+
+# ============================================================
+# 5. Main Execution Pipeline
+# ============================================================
+
+def main():
+    input_file = "data/soil_moisture.csv"
+    output_file = "data/soil_moisture_processed.csv"
+
+    print("=" * 60)
+    print("🌱 Soil Moisture Data Preprocessing Pipeline")
+    print("=" * 60)
+
+    # Step 1: Load & clean
+    df = load_and_clean_data(input_file)
+
+    # Step 2: Denoising & feature engineering
+    df = denoise_and_engineer_features(df)
+
+    # Step 3: Normalization
+    df, moisture_scaler, feature_scaler = normalize_features(df)
+
+    # Step 4: Save processed dataset
+    save_processed_data(df, output_file)
+
+    print("\n[INFO] Preprocessing completed successfully.")
+    print("      Output file is ready for modeling and prediction.")
+    print("=" * 60)
+
+
 if __name__ == "__main__":
-    collect_moisture_data(duration_days=2, interval_minutes=30)
+    main()
+
